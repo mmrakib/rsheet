@@ -7,10 +7,6 @@ use rsheet_lib::replies::Reply;
 use rsheet_lib::cell_expr::{CellExpr, CellArgument};
 use rsheet_lib::cell_value::CellValue;
 
-// External imports
-use log::info;
-
-use std::cell;
 // Standard lib imports
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -19,12 +15,22 @@ use std::error::Error;
 // Internal imports
 use crate::util::cell_id_to_string;
 
+// Type declarations
+type CellGrid = Arc<Mutex< HashMap<String, CellValue> >>;
+
+/// Listens for incoming client connections and requests, then processes them
+/// 
+/// # Arguments
+/// * `manager` - The `Manager` object for handling client connections, either a `ConnectionManager` or `TerminalManager`
+/// 
+/// # Returns
+/// An `Ok` result if the server is initiated properly, or an `Err` result if an error occurred
 pub fn start_server<M>(mut manager: M) -> Result<(), Box<dyn Error>>
 where
     M: Manager,
 {
     // Cell grid
-    let cells: Arc<Mutex< HashMap<String, CellValue> >> = Arc::new(Mutex::new(HashMap::new()));
+    let cells: CellGrid = Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         // Initiate client connection
@@ -36,7 +42,6 @@ where
         loop {
             // Read request message from client
             let message: ReadMessageResult = recv.read_message();
-            info!("Message received");
 
             match message {
                 ReadMessageResult::Message(msg) => {
@@ -57,7 +62,15 @@ where
     }
 }
 
-fn handle_command(command_str: String, cells: &Arc<Mutex< HashMap<String, CellValue> >>) -> Reply {
+/// Handles a command string and converts it into a reply
+/// 
+/// # Arguments
+/// * `command_str` - The command string to parse
+/// * `cells` - The cell grid to use for getting/setting cell values
+/// 
+/// # Returns
+/// The reply to the command specified by the command string
+fn handle_command(command_str: String, cells: &CellGrid) -> Reply {
     let command: Command = match command_str.parse::<Command>() {
         Ok(command) => command,
         Err(e) => return Reply::Error(e.to_string()),
@@ -76,9 +89,9 @@ fn handle_command(command_str: String, cells: &Arc<Mutex< HashMap<String, CellVa
             let cell_id_str = cell_id_to_string(cell_identifier);
 
             let cell_expr = CellExpr::new(&cell_expr);
-
-            let variables: HashMap<String, CellArgument> = HashMap::new();
-            let eval_value = cell_expr.evaluate(&variables);
+            let context: HashMap<String, CellArgument> = HashMap::new();
+            
+            let eval_value = cell_expr.evaluate(&context);
 
             let cell_value = match eval_value {
                 Ok(value) => value,

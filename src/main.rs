@@ -4,6 +4,11 @@ use clap::Parser;
 use rsheet::start_server;
 use rsheet_lib::connect::{resolve_address, ConnectionManager, TerminalManager};
 
+/// A collection of command line arguments for the program
+/// 
+/// # Fields
+/// * `addr` - The network address to listen on
+/// * `mark_mode` - Flag for hiding the contents of error messages
 #[derive(Parser, Debug)]
 struct Args {
     /// Address to listen on
