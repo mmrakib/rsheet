@@ -101,7 +101,7 @@ fn handle_command(command_str: String, cells: &CellGrid) -> Reply {
             let mut cells = cells.lock().unwrap();
             cells.insert(cell_id_str, cell_value.clone());
 
-            Reply::Value(cell_id_to_string(cell_identifier), cell_value.clone())
+            Reply::Value(cell_id_str, cell_value.clone())
         }
     }
 }
