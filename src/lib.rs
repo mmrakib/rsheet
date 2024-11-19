@@ -9,6 +9,7 @@ use rsheet_lib::cell_value::CellValue;
 
 // Standard lib imports
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -19,13 +20,6 @@ use crate::util::cell_id_to_string;
 type CellGrid = Arc<Mutex< HashMap<String, CellValue> >>;
 type LockedCellGrid<'a> = MutexGuard<'a, HashMap<String, CellValue> >;
 
-/// Listens for incoming client connections and requests, then processes them
-/// 
-/// # Arguments
-/// * `manager` - The `Manager` object for handling client connections, either a `ConnectionManager` or `TerminalManager`
-/// 
-/// # Returns
-/// An `Ok` result if the server is initiated properly, or an `Err` result if an error occurred
 pub fn start_server<M>(mut manager: M) -> Result<(), Box<dyn Error>>
 where
     M: Manager,
@@ -35,42 +29,39 @@ where
 
     loop {
         // Initiate client connection
-        let (mut recv, mut send) = match manager.accept_new_connection() {
-            Connection::NewConnection { reader, writer } => (reader, writer),
-            Connection::NoMoreConnections => return Ok(()), // No more new connections, terminate
-        };
-
-        loop {
-            // Read request message from client
-            let message: ReadMessageResult = recv.read_message();
-
-            match message {
-                ReadMessageResult::Message(msg) => {
-                    // Handle command and get reply
-                    let reply = handle_command(msg, &cells);
-    
-                    // Write reply message to client
-                    match send.write_message(reply) {
-                        WriteMessageResult::Ok => continue, // Message sent successfully
-                        WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
-                        WriteMessageResult::Err(e) => return Err(Box::new(e)), // Unexpected error occurred
-                    }
-                },
-                ReadMessageResult::ConnectionClosed => break, // Connection closed, terminate
-                ReadMessageResult::Err(e) => return Err(Box::new(e)), // Unexpected error occurred
-            }
+        match manager.accept_new_connection() {
+            Connection::NewConnection { reader, writer } => {
+                let cells = Arc::clone(&cells);
+                thread::spawn(move || handle_client(reader, writer, cells));
+            },
+            Connection::NoMoreConnections => return Ok((),)
         }
     }
 }
 
-/// Handles a command string and converts it into a reply
-/// 
-/// # Arguments
-/// * `command_str` - The command string to parse
-/// * `cells` - The cell grid to use for getting/setting cell values
-/// 
-/// # Returns
-/// The reply to the command specified by the command string
+fn handle_client(mut reader: impl Reader, mut writer: impl Writer, cells: CellGrid) {
+    loop {
+        // Read request message from client
+        let message: ReadMessageResult = reader.read_message();
+
+        match message {
+            ReadMessageResult::Message(msg) => {
+                // Handle command and get reply
+                let reply = handle_command(msg, &cells);
+
+                // Write reply message to client
+                match writer.write_message(reply) {
+                    WriteMessageResult::Ok => continue, // Message sent successfully
+                    WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
+                    WriteMessageResult::Err(e) => break, // Unexpected error occurred
+                }
+            },
+            ReadMessageResult::ConnectionClosed => break, // Connection closed, terminate
+            ReadMessageResult::Err(e) => break, // Unexpected error occurred
+        }
+    }
+}
+
 fn handle_command(command_str: String, cells: &CellGrid) -> Reply {
     let command: Command = match command_str.parse::<Command>() {
         Ok(command) => command,
