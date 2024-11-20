@@ -154,6 +154,7 @@ fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet, thread_h
     }
 }
 
+/*
 fn detect_cycle(dependencies: &DependencyGraph, cell_id: &str) -> bool {
     let mut visited = HashSet::new();
     let mut stack = vec![cell_id.to_string()];
@@ -170,6 +171,7 @@ fn detect_cycle(dependencies: &DependencyGraph, cell_id: &str) -> bool {
     }
     false
 }
+*/
 
 fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_expr: &CellExpr) {
     let vars = cell_expr.find_variable_names();
@@ -187,16 +189,24 @@ fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_e
             .push(cell_id.to_string());
     }
 
+    /*
     if detect_cycle(dependencies, cell_id) {
         eprintln!("cycle detected after updating dependencies for cell: {}", cell_id);
         dependencies.remove(cell_id);
     }
+    */
 }
 
 fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String, thread_handles: ThreadHandles) {
     let mut queue = vec![updated_cell];
+    let mut visited = HashSet::new();
 
     while let Some(cell) = queue.pop() {
+        if visited.contains(&cell) {
+            continue; // Avoid processing the same cell multiple times
+        }
+        visited.insert(cell.clone());
+
         let mut spreadsheet = shared_spreadsheet.lock().unwrap();
 
         if let Some(dependents) = spreadsheet.dependencies.get(&cell).cloned() {
