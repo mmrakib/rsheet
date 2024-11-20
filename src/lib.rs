@@ -13,6 +13,7 @@ use std::thread;
 use std::time::Instant;
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::{self, Write};
 
 // Internal imports
 use crate::util::cell_id_to_string;
@@ -70,7 +71,12 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: 
 
                 // Write reply message to client
                 match writer.write_message(reply) {
-                    WriteMessageResult::Ok => continue, // Message sent successfully
+                    WriteMessageResult::Ok => { // Message sent successfully
+                        if let Err(e) = io::stdout().flush() {
+                            eprintln!("error flushing stdout: {}", e);
+                        }
+                        continue;
+                    } 
                     WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
                     WriteMessageResult::Err(_) => break, // Unexpected error occurred
                 }
