@@ -78,18 +78,15 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: 
         match message {
             ReadMessageResult::Message(msg) => {
                 // Handle command and get reply
-                let reply = handle_command(msg, &spreadsheet, thread_handles.clone());
+                let reply = handle_command(msg.clone(), &spreadsheet, thread_handles.clone());
 
                 // Write reply message to client
-                match writer.write_message(reply) {
-                    WriteMessageResult::Ok => { // Message sent successfully
-                        if let Err(e) = io::stdout().flush() {
-                            eprintln!("error flushing stdout: {}", e);
-                        }
-                        continue;
-                    } 
-                    WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
-                    WriteMessageResult::Err(_) => break, // Unexpected error occurred
+                if (!msg.starts_with("set")) {
+                    match writer.write_message(reply) {
+                        WriteMessageResult::Ok => continue, // Message sent successfully
+                        WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
+                        WriteMessageResult::Err(_) => break, // Unexpected error occurred
+                    }
                 }
             },
             ReadMessageResult::ConnectionClosed => break, // Connection closed, terminate
