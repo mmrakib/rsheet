@@ -151,25 +151,6 @@ fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet, thread_h
     }
 }
 
-/*
-fn detect_cycle(dependencies: &DependencyGraph, cell_id: &str) -> bool {
-    let mut visited = HashSet::new();
-    let mut stack = vec![cell_id.to_string()];
-
-    while let Some(current) = stack.pop() {
-        if visited.contains(&current) {
-            eprintln!("Cycle detected at cell: {}", current);
-            return true;
-        }
-        visited.insert(current.clone());
-        if let Some(dependents) = dependencies.get(&current) {
-            stack.extend(dependents.clone());
-        }
-    }
-    false
-}
-*/
-
 fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_expr: &CellExpr) {
     let vars = cell_expr.find_variable_names();
 
@@ -185,13 +166,6 @@ fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_e
             .or_insert_with(Vec::new)
             .push(cell_id.to_string());
     }
-
-    /*
-    if detect_cycle(dependencies, cell_id) {
-        eprintln!("cycle detected after updating dependencies for cell: {}", cell_id);
-        dependencies.remove(cell_id);
-    }
-    */
 }
 
 fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String, thread_handles: ThreadHandles) {
@@ -282,6 +256,7 @@ fn resolve_variable(var_name: &str, cells: &CellGrid) -> Option<CellArgument> {
     if let Some(range) = parse_range(var_name) {
         if is_same_row(&range[0], &range[range.len() - 1]) ||
            is_same_col(&range[0], &range[range.len() - 1]) {
+            // Vectors
             let vector_values = range
                 .iter()
                 .map(|cell| cells.get(cell).map(|timed| timed.value.clone())
@@ -290,6 +265,7 @@ fn resolve_variable(var_name: &str, cells: &CellGrid) -> Option<CellArgument> {
 
             return Some(CellArgument::Vector(vector_values));
         } else {
+            // Matrices
             let matrix = build_matrix(&range, cells);
 
             return Some(CellArgument::Matrix(matrix));

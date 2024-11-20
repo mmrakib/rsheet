@@ -6,14 +6,50 @@ These questions are listed in the spec, and you must fill them out
 to receive marks for the Design Questions.
 
 ## Question 1:
+For each of the three alternate implementations, I've made the following judgements.
+
+1. For parsing strings directly, I believe it would be worse than the current implementation, given that parsing inline increases complexity and risks code duplication across functions. The `FromStr` trait centralizes parsing logic, improving maintainability and testability.
+
+2. For separating the parse function, I once again believe it would be worse than the current implementation, given that while it isolates parsing, it doesn't integrate with idiomatic Rust like `str::parse` making the code les ergonomic. The `FromStr` trait adheres to common Rust patterns.
+
+3. For separating `GetCommand` and `SetCommand` structs, I believe this is better than the current implementation, given that if commands diverge in structure or logic, separate structs simplify handling.
 
 ## Question 2:
 
+All variable processing is done in the `resolve_variable` function in my code.
+
+In lib.rs:
+Lines 273 to 279 handle scalar values, and performs matching of the CellValue enum.
+Lines 283 to 291 handle vector values, and performs an iteration collection.
+Lines 349 to 366 handle matrix values, defined in the `build_matrix` function.
+
+For the most part, code duplication has been kept to a minimum, and only certain idiomatic code practices such as usage of iterators are duplicated. On top of this, range parsing using the `parse_range` function is also duplicated.
+
+I guess I could've improved on this code by abstracting scalar, vector and matrix handling into a unified evaluation function to further reduce duplication, meaning that idiomatic practices such as usage of iterators, or even range parsing, would only need to be done once. This would also ensure a consistent interface for variable processing, which in this case is not as apparent.
+
+If I added a new variable called `MatrixList`, I believe my code would not be difficult to extend. All I'd have to do is add an extra condition in the `if` block for the `resolve_variable` function. I would need to update my range parsing to be able to handle multiple matrices, and I would likely need to make the builder function `build_matrix_list` with similar logic to the `build_matrix` function but with an added iterative layer (+1 depth). The `build_matrix_list` function would duplicate a lot of code from `build_matrix`, and thus would not be great for maintainability. But overall, the addition of an extra variable type in my code is trivial.
+
 ## Question 3:
+
+Firstly, there is a mutex in the `handle_client` function at lib.rs:72, which protects shared spreadsheet state as an `Arc<Mutex<Spreadsheet>>` type. Rust's type system is thus leveraged to prevent data races by enforcing exclusive access during lock acquisition.
+
+Secondly, there is thread spawning in the `trigger_updates` function at lib.rs:223, which spawns threads for dependent cell updates. Rust's ownership model ensures safe data sharing by requiring `Arc` reference-counted pointers for preventing invalid memory access and allowing for shared state.
 
 ## Question 4:
 
+I used a `timestamp` for each cell value and named the struct `TimedCellValue` as defined in lib.rs:23 to implement a time-based approach to tracking the age of each update. This ensures that only the latest update for a cell is applied. This timestamp based method ensures that older updates don't ovveride newer ones, which is the nature of the complex edge case posed in Part 4 of the assignment.
+
+I also wanted to add  `trigger_updates` function at lib.rs:171, I utilize a `HashSet` named `visited` to avoid re-processing the same cell multiple times during dependency resolution and updates. Essentially, when you have a dependency graph, a cell can depend on other cells that have already been updated earlier in the same update cycle. If you don't track which cells have already been processed, you might revisit the same cell unnecessarily or create incorrect updates by overwriting values to give inconsistent states, negatively affecting both efficiency and correctness. Thus, the use of a `HashSet` as a set of markers for identifying which cells have already been visited fixes this issue and further increases the efficiency and safety of my code.
+
 ## Question 5:
+
+For `set A1 5`, my `handle_command` function at lib.rs:126 and `update_dependencies` function at lib.rs:154 updates A1 and triggers updates for dependents, which for now don't exist, and thus no dependents are added. Since there are no dependencies, there are also no dependency updates and so `trigger_updates` at lib.rs:171 exits without doing any work.
+
+For `set B1 A1`, my `handle_command` function at lib.rs:126 and `update_depenncies` function at lib.rs:154 adds B1 as a dependent of A1. Since there is now a dependency in the dependency graph in the `Spreadsheet` object, the `trigger_updates` function at lib.rs:171 causes B1 to be updated with A1's value.
+
+For `set C1 B1`, my `handle_command` function at lib.rs:126 and `update_dependencies` function at lib.rs:154 adds B1 as a dependent of C1. Since there are now two depedencies in the dependency graph in the `Spreadsheet` object, the `trigger_updates` function at lib.rs:171 causes C1 to be updated with B1's value, and then in turn, the same function loops and causes B1 to be updated with A1's value.
+
+When A1 is changed from 5 to 7 in the `set A1 7` command, and since the dependency graph has already been created during cell declarations using `update_dependencies`, `trigger_updates` at lib.rs:171 gets called due to the cell update and the chain of depencies from A1 to B1 to C1 gets updated as it did above.
 
 # Questions to the Marker (OPTIONAL)
 
