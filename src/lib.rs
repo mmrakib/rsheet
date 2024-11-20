@@ -11,7 +11,7 @@ use rsheet_lib::cell_value::CellValue;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::{self, Write};
 
@@ -154,6 +154,23 @@ fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet, thread_h
     }
 }
 
+fn detect_cycle(dependencies: &DependencyGraph, cell_id: &str) -> bool {
+    let mut visited = HashSet::new();
+    let mut stack = vec![cell_id.to_string()];
+
+    while let Some(current) = stack.pop() {
+        if visited.contains(&current) {
+            eprintln!("Cycle detected at cell: {}", current);
+            return true;
+        }
+        visited.insert(current.clone());
+        if let Some(dependents) = dependencies.get(&current) {
+            stack.extend(dependents.clone());
+        }
+    }
+    false
+}
+
 fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_expr: &CellExpr) {
     let vars = cell_expr.find_variable_names();
 
@@ -169,58 +186,59 @@ fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_e
             .or_insert_with(Vec::new)
             .push(cell_id.to_string());
     }
+
+    if detect_cycle(dependencies, cell_id) {
+        eprintln!("cycle detected after updating dependencies for cell: {}", cell_id);
+        dependencies.remove(cell_id);
+    }
 }
 
 fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String, thread_handles: ThreadHandles) {
-    let handle = thread::spawn(move || {
-        let mut queue = vec![updated_cell];
+    let mut queue = vec![updated_cell];
 
-        while let Some(cell) = queue.pop() {
-            let mut spreadsheet = shared_spreadsheet.lock().unwrap();
+    while let Some(cell) = queue.pop() {
+        let mut spreadsheet = shared_spreadsheet.lock().unwrap();
 
-            if let Some(dependents) = spreadsheet.dependencies.get(&cell).cloned() {
-                for dependent in dependents {
-                    if let Some(original_expr) = spreadsheet.cells.get(&dependent) {
-                        if let Some(original_expr_str) = &original_expr.expression {
-                            let cloned_expression = original_expr.expression.clone();
+        if let Some(dependents) = spreadsheet.dependencies.get(&cell).cloned() {
+            for dependent in dependents {
+                if let Some(original_expr) = spreadsheet.cells.get(&dependent) {
+                    if let Some(original_expr_str) = &original_expr.expression {
+                        let cloned_expression = original_expr.expression.clone();
 
-                            let new_cell_expr = CellExpr::new(&original_expr_str);
-                            let context = handle_context(&new_cell_expr, &spreadsheet.cells);
+                        let new_cell_expr = CellExpr::new(&original_expr_str);
+                        let context = handle_context(&new_cell_expr, &spreadsheet.cells);
 
-                            match new_cell_expr.evaluate(&context) {
-                                Ok(new_value) => {
-                                    spreadsheet.cells.insert(
-                                        dependent.clone(),
-                                        TimedCellValue {
-                                            value: new_value,
-                                            expression: cloned_expression,
-                                            timestamp: Instant::now(),
-                                        },
-                                    );
+                        match new_cell_expr.evaluate(&context) {
+                            Ok(new_value) => {
+                                spreadsheet.cells.insert(
+                                    dependent.clone(),
+                                    TimedCellValue {
+                                        value: new_value,
+                                        expression: cloned_expression,
+                                        timestamp: Instant::now(),
+                                    },
+                                );
 
-                                    queue.push(dependent.clone());
-                                }
-                                Err(_) => {
-                                    spreadsheet.cells.insert(
-                                        dependent.clone(),
-                                        TimedCellValue {
-                                            value: CellValue::Error("evaluation failed".to_string()),
-                                            expression: cloned_expression,
-                                            timestamp: Instant::now(),
-                                        },
-                                    );
-                                }
+                                queue.push(dependent.clone());
                             }
-                        } else {
-                            println!("dependent {} has no valid expression to evaluate", dependent);
+                            Err(_) => {
+                                spreadsheet.cells.insert(
+                                    dependent.clone(),
+                                    TimedCellValue {
+                                        value: CellValue::Error("evaluation failed".to_string()),
+                                        expression: cloned_expression,
+                                        timestamp: Instant::now(),
+                                    },
+                                );
+                            }
                         }
+                    } else {
+                        println!("dependent {} has no valid expression to evaluate", dependent);
                     }
                 }
             }
         }
-    });
-
-    thread_handles.lock().unwrap().push(handle);
+    }
 }
 
 fn wait_for_threads(thread_handles: ThreadHandles) {
