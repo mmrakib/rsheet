@@ -140,7 +140,6 @@ fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet) -> Reply
 
 fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_expr: &CellExpr) {
     let vars = cell_expr.find_variable_names();
-    println!("Updating dependencies for {}: {:?}", cell_id, vars);
 
     // Remove `cell_id` from all current dependencies
     for deps in dependencies.values_mut() {
@@ -154,27 +153,19 @@ fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_e
             .or_insert_with(Vec::new)
             .push(cell_id.to_string());
     }
-
-    println!("Updated dependency graph: {:?}", dependencies);
 }
 
 fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) {
-    println!("Triggering updates for: {}", updated_cell);
-
     thread::spawn(move || {
         let mut queue = vec![updated_cell];
 
         while let Some(cell) = queue.pop() {
             let mut spreadsheet = shared_spreadsheet.lock().unwrap();
 
-            println!("Processing cell: {}", cell);
-
             if let Some(dependents) = spreadsheet.dependencies.get(&cell).cloned() {
                 for dependent in dependents {
                     if let Some(original_expr) = spreadsheet.cells.get(&dependent) {
                         if let Some(original_expr_str) = &original_expr.expression {
-                            println!("Re-evaluating dependent: {} with expression: {:?}", dependent, original_expr.expression);
-
                             let cloned_expression = original_expr.expression.clone();
 
                             let new_cell_expr = CellExpr::new(&original_expr_str);
@@ -182,8 +173,6 @@ fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) 
 
                             match new_cell_expr.evaluate(&context) {
                                 Ok(new_value) => {
-                                    println!("Updating dependent: {} -> {:?}", dependent, new_value);
-
                                     spreadsheet.cells.insert(
                                         dependent.clone(),
                                         TimedCellValue {
@@ -196,12 +185,10 @@ fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) 
                                     queue.push(dependent.clone());
                                 }
                                 Err(_) => {
-                                    println!("Error evaluating dependent: {}", dependent);
-
                                     spreadsheet.cells.insert(
                                         dependent.clone(),
                                         TimedCellValue {
-                                            value: CellValue::Error("Evaluation failed".to_string()),
+                                            value: CellValue::Error("evaluation failed".to_string()),
                                             expression: cloned_expression,
                                             timestamp: Instant::now(),
                                         },
@@ -209,7 +196,7 @@ fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) 
                                 }
                             }
                         } else {
-                            println!("Dependent {} has no valid expression to evaluate", dependent);
+                            println!("dependent {} has no valid expression to evaluate", dependent);
                         }
                     }
                 }
