@@ -9,7 +9,7 @@ use rsheet_lib::cell_value::CellValue;
 
 // Standard lib imports
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use std::collections::HashMap;
 use std::error::Error;
@@ -38,6 +38,9 @@ struct Spreadsheet {
 }
 type SharedSpreadsheet = Arc<Mutex< Spreadsheet >>;
 
+// Thread handles
+type ThreadHandles = Arc<Mutex< Vec<JoinHandle<()> >>>;
+
 pub fn start_server<M>(mut manager: M) -> Result<(), Box<dyn Error>>
 where
     M: Manager,
@@ -47,19 +50,27 @@ where
         dependencies: HashMap::new(),
     }));
 
+    let thread_handles = Arc::new(Mutex::new(Vec::new()));
+
     loop {
         // Initiate client connection
         match manager.accept_new_connection() {
             Connection::NewConnection { reader, writer } => {
                 let spreadsheet = Arc::clone(&spreadsheet);
-                thread::spawn(move || handle_client(reader, writer, spreadsheet));
+                let thread_handles_clone = Arc::clone(&thread_handles);
+
+                let handle = thread::spawn(move || handle_client(reader, writer, spreadsheet, thread_handles_clone));
+                thread_handles.lock().unwrap().push(handle);
             },
-            Connection::NoMoreConnections => return Ok((),)
+            Connection::NoMoreConnections => {
+                wait_for_threads(thread_handles);
+                return Ok(());
+            },
         }
     }
 }
 
-fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: SharedSpreadsheet) {
+fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: SharedSpreadsheet, thread_handles: ThreadHandles) {
     loop {
         // Read request message from client
         let message: ReadMessageResult = reader.read_message();
@@ -67,7 +78,7 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: 
         match message {
             ReadMessageResult::Message(msg) => {
                 // Handle command and get reply
-                let reply = handle_command(msg, &spreadsheet);
+                let reply = handle_command(msg, &spreadsheet, thread_handles.clone());
 
                 // Write reply message to client
                 match writer.write_message(reply) {
@@ -87,7 +98,7 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: 
     }
 }
 
-fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet) -> Reply {
+fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet, thread_handles: ThreadHandles) -> Reply {
     let command: Command = match command_str.parse::<Command>() {
         Ok(command) => command,
         Err(e) => return Reply::Error(e.to_string()),
@@ -136,7 +147,7 @@ fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet) -> Reply
                 update_dependencies(&mut spreadsheet.dependencies, &cell_id_str, &CellExpr::new(&cell_expr_str));
             }
 
-            trigger_updates(Arc::clone(spreadsheet), cell_id_str.clone());
+            trigger_updates(Arc::clone(spreadsheet), cell_id_str.clone(), thread_handles);
 
             Reply::Value(cell_id_str, cell_value.clone())
         }
@@ -160,8 +171,8 @@ fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_e
     }
 }
 
-fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) {
-    thread::spawn(move || {
+fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String, thread_handles: ThreadHandles) {
+    let handle = thread::spawn(move || {
         let mut queue = vec![updated_cell];
 
         while let Some(cell) = queue.pop() {
@@ -208,6 +219,15 @@ fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) 
             }
         }
     });
+
+    thread_handles.lock().unwrap().push(handle);
+}
+
+fn wait_for_threads(thread_handles: ThreadHandles) {
+    let mut handles = thread_handles.lock().unwrap();
+    for handle in handles.drain(..) {
+        handle.join().expect("thread failed to join");
+    }
 }
 
 fn handle_context(cell_expr: &CellExpr, cells: &CellGrid) -> HashMap<String, CellArgument> {
