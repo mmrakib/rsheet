@@ -81,7 +81,7 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: 
                 let reply = handle_command(msg.clone(), &spreadsheet, thread_handles.clone());
 
                 // Write reply message to client
-                if (!msg.starts_with("set")) {
+                if (!msg.starts_with("set") || matches!(reply, Reply::Error(_))) {
                     match writer.write_message(reply) {
                         WriteMessageResult::Ok => continue, // Message sent successfully
                         WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
