@@ -10,36 +10,56 @@ use rsheet_lib::cell_value::CellValue;
 // Standard lib imports
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
+use std::time::Instant;
 use std::collections::HashMap;
 use std::error::Error;
 
 // Internal imports
 use crate::util::cell_id_to_string;
 
-// Type declarations
-type CellGrid = Arc<Mutex< HashMap<String, CellValue> >>;
-type LockedCellGrid<'a> = MutexGuard<'a, HashMap<String, CellValue> >;
+// Cells
+#[derive(Debug, Clone)]
+struct TimedCellValue {
+    value: CellValue,
+    expression: Option<String>,
+    timestamp: Instant,
+}
+type CellGrid = HashMap<String, TimedCellValue>;
+
+// Dependencies
+type DependencyGraph = HashMap<String, Vec<String>>;
+
+// Spreadsheet
+#[derive(Debug, Clone)]
+struct Spreadsheet {
+    cells: CellGrid,
+    dependencies: DependencyGraph,
+}
+type SharedSpreadsheet = Arc<Mutex< Spreadsheet >>;
+type LockedSharedSpreadsheet<'a> = MutexGuard<'a, Spreadsheet>;
 
 pub fn start_server<M>(mut manager: M) -> Result<(), Box<dyn Error>>
 where
     M: Manager,
 {
-    // Cell grid
-    let cells: CellGrid = Arc::new(Mutex::new(HashMap::new()));
+    let spreadsheet = Arc::new(Mutex::new(Spreadsheet {
+        cells: HashMap::new(),
+        dependencies: HashMap::new(),
+    }));
 
     loop {
         // Initiate client connection
         match manager.accept_new_connection() {
             Connection::NewConnection { reader, writer } => {
-                let cells = Arc::clone(&cells);
-                thread::spawn(move || handle_client(reader, writer, cells));
+                let spreadsheet = Arc::clone(&spreadsheet);
+                thread::spawn(move || handle_client(reader, writer, spreadsheet));
             },
             Connection::NoMoreConnections => return Ok((),)
         }
     }
 }
 
-fn handle_client(mut reader: impl Reader, mut writer: impl Writer, cells: CellGrid) {
+fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: SharedSpreadsheet) {
     loop {
         // Read request message from client
         let message: ReadMessageResult = reader.read_message();
@@ -47,7 +67,7 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, cells: CellGr
         match message {
             ReadMessageResult::Message(msg) => {
                 // Handle command and get reply
-                let reply = handle_command(msg, &cells);
+                let reply = handle_command(msg, &spreadsheet);
 
                 // Write reply message to client
                 match writer.write_message(reply) {
@@ -62,7 +82,7 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, cells: CellGr
     }
 }
 
-fn handle_command(command_str: String, cells: &CellGrid) -> Reply {
+fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet) -> Reply {
     let command: Command = match command_str.parse::<Command>() {
         Ok(command) => command,
         Err(e) => return Reply::Error(e.to_string()),
@@ -70,35 +90,135 @@ fn handle_command(command_str: String, cells: &CellGrid) -> Reply {
 
     match command {
         Command::Get { cell_identifier } => {
-            let cells = cells.lock().unwrap();
+            let spreadsheet = spreadsheet.lock().unwrap();
             let cell_id_str = cell_id_to_string(cell_identifier);
 
-            let cell_value = cells.get(&cell_id_str).unwrap_or(&CellValue::None);
+            let cell_value = spreadsheet
+                .cells
+                .get(&cell_id_str)
+                .map(|timed_value| &timed_value.value)
+                .unwrap_or(&CellValue::None);
 
             Reply::Value(cell_id_str, cell_value.clone())
         }
         Command::Set { cell_identifier, cell_expr } => {
-            let mut cells = cells.lock().unwrap();
             let cell_id_str = cell_id_to_string(cell_identifier);
+            let cell_expr_str = cell_expr.clone();
+        
+            let cell_expr = CellExpr::new(&cell_expr_str);
+            let mut cell_value: CellValue;
 
-            let cell_expr = CellExpr::new(&cell_expr);
-            let context: HashMap<String, CellArgument> = handle_context(&cell_expr, &cells);
-            
-            let eval_value = cell_expr.evaluate(&context);
+            {
+                let mut spreadsheet = spreadsheet.lock().unwrap();
 
-            let cell_value = match eval_value {
-                Ok(value) => value,
-                Err(_) => return Reply::Error("could not evaluate expression".to_string()),
-            };
+                let context: HashMap<String, CellArgument> = handle_context(&cell_expr, &spreadsheet.cells);
+                let eval_value = cell_expr.evaluate(&context);
 
-            cells.insert(cell_id_str.clone(), cell_value.clone());
+                cell_value = match eval_value {
+                    Ok(value) => value,
+                    Err(_) => return Reply::Error("could not evaluate expression".to_string()),
+                };
+
+                spreadsheet.cells.insert(
+                    cell_id_str.clone(),
+                    TimedCellValue {
+                        value: cell_value.clone(),
+                        expression: Some(cell_expr_str.clone()),
+                        timestamp: Instant::now(),
+                    }
+                );
+
+                update_dependencies(&mut spreadsheet.dependencies, &cell_id_str, &CellExpr::new(&cell_expr_str));
+            }
+
+            trigger_updates(Arc::clone(spreadsheet), cell_id_str.clone());
 
             Reply::Value(cell_id_str, cell_value.clone())
         }
     }
 }
 
-fn handle_context(cell_expr: &CellExpr, cells: &LockedCellGrid) -> HashMap<String, CellArgument> {
+fn update_dependencies(dependencies: &mut DependencyGraph, cell_id: &str, cell_expr: &CellExpr) {
+    let vars = cell_expr.find_variable_names();
+    println!("Updating dependencies for {}: {:?}", cell_id, vars);
+
+    // Remove `cell_id` from all current dependencies
+    for deps in dependencies.values_mut() {
+        deps.retain(|dep| dep != cell_id);
+    }
+
+    // Add `cell_id` as a dependent to all variables in `cell_expr`
+    for var in vars {
+        dependencies
+            .entry(var)
+            .or_insert_with(Vec::new)
+            .push(cell_id.to_string());
+    }
+
+    println!("Updated dependency graph: {:?}", dependencies);
+}
+
+fn trigger_updates(shared_spreadsheet: SharedSpreadsheet, updated_cell: String) {
+    println!("Triggering updates for: {}", updated_cell);
+
+    thread::spawn(move || {
+        let mut queue = vec![updated_cell];
+
+        while let Some(cell) = queue.pop() {
+            let mut spreadsheet = shared_spreadsheet.lock().unwrap();
+
+            println!("Processing cell: {}", cell);
+
+            if let Some(dependents) = spreadsheet.dependencies.get(&cell).cloned() {
+                for dependent in dependents {
+                    if let Some(original_expr) = spreadsheet.cells.get(&dependent) {
+                        if let Some(original_expr_str) = &original_expr.expression {
+                            println!("Re-evaluating dependent: {} with expression: {:?}", dependent, original_expr.expression);
+
+                            let cloned_expression = original_expr.expression.clone();
+
+                            let new_cell_expr = CellExpr::new(&original_expr_str);
+                            let context = handle_context(&new_cell_expr, &spreadsheet.cells);
+
+                            match new_cell_expr.evaluate(&context) {
+                                Ok(new_value) => {
+                                    println!("Updating dependent: {} -> {:?}", dependent, new_value);
+
+                                    spreadsheet.cells.insert(
+                                        dependent.clone(),
+                                        TimedCellValue {
+                                            value: new_value,
+                                            expression: cloned_expression,
+                                            timestamp: Instant::now(),
+                                        },
+                                    );
+
+                                    queue.push(dependent.clone());
+                                }
+                                Err(_) => {
+                                    println!("Error evaluating dependent: {}", dependent);
+
+                                    spreadsheet.cells.insert(
+                                        dependent.clone(),
+                                        TimedCellValue {
+                                            value: CellValue::Error("Evaluation failed".to_string()),
+                                            expression: cloned_expression,
+                                            timestamp: Instant::now(),
+                                        },
+                                    );
+                                }
+                            }
+                        } else {
+                            println!("Dependent {} has no valid expression to evaluate", dependent);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn handle_context(cell_expr: &CellExpr, cells: &CellGrid) -> HashMap<String, CellArgument> {
     let mut context: HashMap<String, CellArgument> = HashMap::new();
     let variables = cell_expr.find_variable_names();
 
@@ -111,10 +231,10 @@ fn handle_context(cell_expr: &CellExpr, cells: &LockedCellGrid) -> HashMap<Strin
     context
 }
 
-fn resolve_variable(var_name: &str, cells: &LockedCellGrid) -> Option<CellArgument> {
+fn resolve_variable(var_name: &str, cells: &CellGrid) -> Option<CellArgument> {
     if let Some(cell_value) = cells.get(var_name) {
         // Values
-        return match cell_value {
+        return match &cell_value.value {
             CellValue::Int(i) => Some(CellArgument::Value( CellValue::Int(*i) )),
             CellValue::String(s) => Some(CellArgument::Value( CellValue::String(s.clone()) )),
             CellValue::None => Some(CellArgument::Value( CellValue::Int(0) )),
@@ -127,7 +247,8 @@ fn resolve_variable(var_name: &str, cells: &LockedCellGrid) -> Option<CellArgume
            is_same_col(&range[0], &range[range.len() - 1]) {
             let vector_values = range
                 .iter()
-                .map(|cell| cells.get(cell).cloned().unwrap_or(CellValue::None))
+                .map(|cell| cells.get(cell).map(|timed| timed.value.clone())
+                .unwrap_or(CellValue::None))
                 .collect::<Vec<_>>();
 
             return Some(CellArgument::Vector(vector_values));
@@ -186,7 +307,7 @@ fn is_same_col(start: &str, end: &str) -> bool {
     }
 }
 
-fn build_matrix(range: &[String], cells: &LockedCellGrid) -> Vec<Vec<CellValue>> {
+fn build_matrix(range: &[String], cells: &CellGrid) -> Vec<Vec<CellValue>> {
     let start_id = range.first().and_then(|c| c.parse::<CellIdentifier>().ok()).unwrap();
     let end_id = range.last().and_then(|c| c.parse::<CellIdentifier>().ok()).unwrap();
 
@@ -197,7 +318,7 @@ fn build_matrix(range: &[String], cells: &LockedCellGrid) -> Vec<Vec<CellValue>>
         for col in start_id.col..=end_id.col {
             let cell_id = CellIdentifier { col, row };
             let cell_name = cell_id_to_string(cell_id);
-            let value = cells.get(&cell_name).cloned().unwrap_or(CellValue::None);
+            let value = cells.get(&cell_name).cloned().map(|timed_cell| timed_cell.value.clone()).unwrap_or(CellValue::None);
             row_values.push(value);
         }
         matrix.push(row_values);
