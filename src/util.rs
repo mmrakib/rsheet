@@ -1,5 +1,5 @@
 // rsheet_lib imports
-use rsheet_lib::cells::{column_name_to_number, column_number_to_name};
+use rsheet_lib::cells::column_number_to_name;
 use rsheet_lib::command::CellIdentifier;
 
 /// Converts a cell ID to a string

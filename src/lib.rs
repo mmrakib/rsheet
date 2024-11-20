@@ -8,7 +8,7 @@ use rsheet_lib::cell_expr::{CellExpr, CellArgument};
 use rsheet_lib::cell_value::CellValue;
 
 // Standard lib imports
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 use std::collections::HashMap;
@@ -36,7 +36,6 @@ struct Spreadsheet {
     dependencies: DependencyGraph,
 }
 type SharedSpreadsheet = Arc<Mutex< Spreadsheet >>;
-type LockedSharedSpreadsheet<'a> = MutexGuard<'a, Spreadsheet>;
 
 pub fn start_server<M>(mut manager: M) -> Result<(), Box<dyn Error>>
 where
@@ -73,11 +72,11 @@ fn handle_client(mut reader: impl Reader, mut writer: impl Writer, spreadsheet: 
                 match writer.write_message(reply) {
                     WriteMessageResult::Ok => continue, // Message sent successfully
                     WriteMessageResult::ConnectionClosed => break, // Connection closed, terminate
-                    WriteMessageResult::Err(e) => break, // Unexpected error occurred
+                    WriteMessageResult::Err(_) => break, // Unexpected error occurred
                 }
             },
             ReadMessageResult::ConnectionClosed => break, // Connection closed, terminate
-            ReadMessageResult::Err(e) => break, // Unexpected error occurred
+            ReadMessageResult::Err(_) => break, // Unexpected error occurred
         }
     }
 }
@@ -106,7 +105,7 @@ fn handle_command(command_str: String, spreadsheet: &SharedSpreadsheet) -> Reply
             let cell_expr_str = cell_expr.clone();
         
             let cell_expr = CellExpr::new(&cell_expr_str);
-            let mut cell_value: CellValue;
+            let cell_value: CellValue;
 
             {
                 let mut spreadsheet = spreadsheet.lock().unwrap();
